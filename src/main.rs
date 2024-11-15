@@ -1,5 +1,13 @@
 mod data;
 mod model;
 mod train;
+use crate::train::{training_loop, TrainConfig};
+use anyhow;
+use data::Dataset;
 
-fn main() {}
+fn main() -> anyhow::Result<()> {
+    let train_cfg = TrainConfig::default();
+    let mut ds = Dataset::new("data/enwik8.gz", train_cfg.seq_len());
+    training_loop(&mut ds, &train_cfg)?;
+    Ok(())
+}
