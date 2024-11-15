@@ -1,4 +1,4 @@
-use candle_core::{DType, Device, IndexOp, Result, Tensor, D};
+use candle_core::{DType, IndexOp, Result, Tensor, D};
 use candle_nn::{
     conv1d, embedding, linear, linear_no_bias, loss::cross_entropy, ops, rms_norm, Conv1d,
     Conv1dConfig, Embedding, Linear, Module, RmsNorm, VarBuilder,
@@ -13,20 +13,19 @@ fn heinsen_associative_scan_log(log_coeffs: &Tensor, log_values: &Tensor) -> Res
 
 fn g(x: &Tensor) -> Result<Tensor> {
     x.lt(0_u32)?
-        .where_cond(&ops::sigmoid(&x)?, &x.add(&Tensor::new(0.5, x.device())?)?)
+        .where_cond(&ops::sigmoid(&x)?, &x.affine(0., 0.5)?)
 }
 
-fn softplus(x: &Tensor, beta: f32, threshold: f32) -> Result<Tensor> {
-    let beta = Tensor::new(beta, x.device())?;
-    let mask = x.mul(&beta)?.gt(threshold)?;
-    let res = x.mul(&beta)?.exp()?.div(&beta)?;
+fn softplus(x: &Tensor, beta: f64, threshold: f32) -> Result<Tensor> {
+    let mask = x.affine(beta, 0.)?.gt(threshold)?;
+    let res = x.affine(beta, 0.)?.exp()?.affine(1. / beta, 0.)?;
     mask.where_cond(&x, &res)
 }
 
 fn log_g(x: &Tensor) -> Result<Tensor> {
-    x.lt(0_u32)?.where_cond(
-        &softplus(&x, 1.0, 20.0)?.mul(&Tensor::new(-1.0, x.device())?)?,
-        &x.relu()?.add(&Tensor::new(0.5, x.device())?)?.log()?,
+    x.lt(0_f32)?.where_cond(
+        &softplus(&x, 1.0, 20.0)?.affine(-1., 0.)?,
+        &x.relu()?.affine(0., 0.5)?.log()?,
     )
 }
 
@@ -42,17 +41,12 @@ struct MinGRU {
 }
 
 impl MinGRU {
-    fn new(dim: usize, exp_factor: f32) -> Result<Self> {
-        let device = Device::cuda_if_available(0)?;
+    fn new(dim: usize, exp_factor: f32, vb: VarBuilder) -> Result<Self> {
         let dim_inner = (dim as f32 * exp_factor).round() as usize;
-
         // first linear layer
-        let weight = Tensor::randn(0_f32, 1.0, (dim, dim_inner * 2), &device)?;
-        let to_hidden_and_gate = Linear::new(weight, None);
-
+        let to_hidden_and_gate = linear(dim, dim_inner * 2, vb.pp("hidden_n_gate"))?;
         // second linear layer
-        let weight = Tensor::randn(0_f32, 1.0, (dim_inner, dim), &device)?;
-        let to_out = Linear::new(weight, None);
+        let to_out = linear_no_bias(dim_inner, dim, vb.pp("to_out"))?;
 
         Ok(MinGRU {
             to_hidden_and_gate,
@@ -182,7 +176,7 @@ impl MinGRUBlock {
         };
         let norm1 = rms_norm(dim, rms_eps, vs.pp(format!("block{}.norm1", blk_num)))?;
         let norm2 = rms_norm(dim, rms_eps, vs.pp(format!("block{}.norm2", blk_num)))?;
-        let min_gru = MinGRU::new(dim, exp_factor)?;
+        let min_gru = MinGRU::new(dim, exp_factor, vs.pp(format!("block{}.mingru", blk_num)))?;
         let ffn = FeedForward::new(dim, ff_mult, vs.pp(format!("block{}.ffn", blk_num)))?;
         Ok(Self {
             conv,
@@ -221,6 +215,8 @@ pub struct MinGRULM {
     layers: Vec<MinGRUBlock>,
     norm: RmsNorm,
     to_logits: Linear,
+    can_cache: bool,
+    num_tokens: usize,
 }
 
 impl MinGRULM {
@@ -238,15 +234,21 @@ impl MinGRULM {
                 &mut vb,
             )?);
         }
-        let norm = rms_norm(config.dim, 1e-6, vb.clone())?;
-        let to_logits = linear_no_bias(config.dim, config.num_tokens, vb)?;
+        let norm = rms_norm(config.dim, 1e-6, vb.pp("norm"))?;
+        let to_logits = linear_no_bias(config.dim, config.num_tokens, vb.pp("to_logits"))?;
+        let can_cache = config.conv_kernel_size.is_none();
 
         Ok(Self {
             token_emb,
             layers,
             norm,
             to_logits,
+            can_cache,
+            num_tokens: config.num_tokens,
         })
+    }
+    pub fn can_cache(&self) -> bool {
+        self.can_cache
     }
 
     pub fn forward(
@@ -256,18 +258,20 @@ impl MinGRULM {
         prev_hiddens: Option<Vec<Tensor>>,
     ) -> Result<(Tensor, Vec<Tensor>)> {
         let x_dim = x.dims();
-        let mut x = x.clone();
-        let mut labels = Tensor::zeros((x_dim[0], 1), DType::U32, x.device())?;
+        let mut out = x.clone();
+
+        let mut labels = Tensor::zeros((x_dim[0], self.num_tokens), DType::U32, x.device())?;
 
         if return_loss {
-            x = x.i((.., ..x_dim[1] - 1))?;
-            labels = x.i((.., x_dim[1] - 1))?;
+            out = x.i((.., ..x_dim[1] - 1))?;
+            labels = x.i((.., 1..))?;
         }
 
-        x = self.token_emb.forward(&x)?;
+        out = self.token_emb.forward(&out)?;
 
         if prev_hiddens.is_some() {
-            x = x.i((.., x_dim[1] - 1..))?;
+            let out_dims = out.dims();
+            out = out.i((.., out_dims[1] - 1..))?;
         }
 
         let prev_hid = prev_hiddens.unwrap_or(Vec::new());
@@ -277,31 +281,34 @@ impl MinGRULM {
         for gru_block in self.layers.iter() {
             // conv
             if gru_block.conv.is_some() {
-                x = gru_block.conv.as_ref().unwrap().forward(&x)?.add(&x)?;
+                out = gru_block.conv.as_ref().unwrap().forward(&out)?.add(&out)?;
             }
 
             // minGRU
             let prev_hidden = prev_hiddens_iter.next();
-            let norm_x = gru_block.norm1.forward(&x)?;
+            let norm_out = gru_block.norm1.forward(&out)?;
             let (min_gru_out, next_prev_hidden) =
-                gru_block.min_gru.forward(&norm_x, prev_hidden, true)?;
-            x = min_gru_out.add(&x)?;
+                gru_block.min_gru.forward(&norm_out, prev_hidden, true)?;
+            out = min_gru_out.add(&out)?;
             next_prev_hiddens.push(next_prev_hidden.unwrap());
 
             // ffn
-            x = gru_block
+            out = gru_block
                 .ffn
-                .forward(&gru_block.norm2.forward(&x)?)?
-                .add(&x)?;
+                .forward(&gru_block.norm2.forward(&out)?)?
+                .add(&out)?;
         }
 
-        let embed = self.norm.forward(&x)?;
+        let embed = self.norm.forward(&out)?;
         let logits = self.to_logits.forward(&embed)?;
 
         if !return_loss {
             return Ok((logits, next_prev_hiddens));
         } else {
-            let loss = cross_entropy(&logits.t()?, &labels)?;
+            let logits_flat = logits.reshape(((), logits.dim(D::Minus1)?))?;
+            let labels_flat = labels.reshape(((),))?;
+            let loss = cross_entropy(&logits_flat, &labels_flat)?;
+            println!("CE loss: {:?}", loss);
             return Ok((loss, next_prev_hiddens));
         }
     }
