@@ -6,7 +6,14 @@ use candle_nn::{
 
 fn heinsen_associative_scan_log(log_coeffs: &Tensor, log_values: &Tensor) -> Result<Tensor> {
     let a_star = log_coeffs.cumsum(1)?;
-    let log_h0_plus_b_star = log_values.sub(&a_star)?.exp()?.cumsum(1)?.log()?;
+    // logcumsumexp, with clamping for numerical stability
+    let log_h0_plus_b_star = log_values
+        .sub(&a_star)?
+        .exp()?
+        .clamp(1e-6, 1e6)?
+        .cumsum(1)?
+        .log()?
+        .clamp(-1e6, 1e6)?;
     let log_h = a_star.add(&log_h0_plus_b_star)?;
     Ok(log_h.exp()?)
 }
@@ -24,7 +31,7 @@ fn softplus(x: &Tensor, beta: f64, threshold: f32) -> Result<Tensor> {
 
 fn log_g(x: &Tensor) -> Result<Tensor> {
     x.lt(0_f32)?.where_cond(
-        &softplus(&x, 1.0, 20.0)?.affine(-1., 0.)?,
+        &softplus(&x.affine(-1., 0.)?, 1.0, 20.0)?.affine(-1., 0.)?,
         &x.relu()?.affine(0., 0.5)?.log()?,
     )
 }
@@ -210,6 +217,12 @@ impl Default for MinGRUConfig {
     }
 }
 
+impl MinGRUConfig {
+    pub fn set_num_tokens(&mut self, num_tokens: usize) {
+        self.num_tokens = num_tokens
+    }
+}
+
 pub struct MinGRULM {
     token_emb: Embedding,
     layers: Vec<MinGRUBlock>,
@@ -308,7 +321,6 @@ impl MinGRULM {
             let logits_flat = logits.reshape(((), logits.dim(D::Minus1)?))?;
             let labels_flat = labels.reshape(((),))?;
             let loss = cross_entropy(&logits_flat, &labels_flat)?;
-            println!("CE loss: {:?}", loss);
             return Ok((loss, next_prev_hiddens));
         }
     }
