@@ -40,7 +40,8 @@ pub struct Dataset {
 impl Dataset {
     pub fn new(filepath: &str, tokenizer_file: Option<&str>, seq_len: usize) -> Self {
         let data = extract_data(filepath);
-        let (train_data, val_data) = data.split_at(90e6 as usize);
+        let split_point = data.len() as f32 * 0.85;
+        let (train_data, val_data) = data.split_at(split_point as usize);
         let tokenizer = get_tokenizer(tokenizer_file).unwrap();
         let padding_params = match tokenizer.get_padding() {
             Some(pad_params) => pad_params.to_owned(),
