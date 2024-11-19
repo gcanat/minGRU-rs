@@ -1,10 +1,9 @@
 use crate::data::Dataset;
 use crate::model::{MinGRUConfig, MinGRULM};
 use anyhow;
-use candle_core::{DType, Device, Result, Tensor, D};
+use candle_core::{DType, Device, IndexOp, Result, Tensor, D};
 use candle_nn::{AdamW, Optimizer, VarBuilder, VarMap};
 use candle_transformers::generation::{LogitsProcessor, Sampling};
-use tokenizers::Encoding;
 
 pub struct TrainConfig {
     num_batches: usize,
@@ -27,9 +26,9 @@ impl Default for TrainConfig {
             batch_size: 4,
             grad_accum: 4,
             learning_rate: 1e-4,
-            validate_every: 10,
+            validate_every: 100,
             prime_length: 128,
-            generate_every: 10,
+            generate_every: 500,
             generate_length: 512,
             seq_len: 512,
             temperature: 1.0,
@@ -73,10 +72,10 @@ fn base_decoding(
     Ok(tokens)
 }
 
-fn batch_encoding_to_tensor(encoding: &Vec<Encoding>) -> Result<Tensor> {
+fn batch_encoding_to_tensor(encoding: &Vec<Vec<u32>>) -> Result<Tensor> {
     let ids = encoding
         .iter()
-        .map(|enc| Tensor::from_slice(enc.get_ids(), (enc.len(),), &Device::Cpu).unwrap())
+        .map(|enc| Tensor::from_slice(enc, (enc.len(),), &Device::Cpu).unwrap())
         .collect::<Vec<_>>();
     Tensor::stack(&ids, 0)
 }
@@ -129,7 +128,8 @@ pub fn training_loop(m: &mut Dataset, cfg: &TrainConfig) -> anyhow::Result<()> {
             let test_input = batch_encoding_to_tensor(&test_batch)?
                 .to_device(&dev)?
                 .narrow(D::Minus1, 0, cfg.prime_length)?;
-            let prime = m.tokenizer.decode(test_batch[0].get_ids(), false).unwrap();
+            let txt_input: Vec<u32> = test_input.i((0, ..))?.to_vec1()?;
+            let prime = m.tokenizer.decode(&txt_input, false).unwrap();
             println!("INPUT: {}", prime);
 
             let sampled = base_decoding(&model, &test_input, cfg.generate_length, &mut logit_proc)?;
