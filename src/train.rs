@@ -106,8 +106,10 @@ pub fn training_loop(m: &mut Dataset, cfg: &TrainConfig) -> anyhow::Result<()> {
         acc_loss = acc_loss.add(&loss)?;
 
         if i % cfg.grad_accum == 0 {
-            let train_loss = Tensor::new(1. / (i * cfg.grad_accum) as f32, &dev)?;
-            println!("Training loss: {}", train_loss.mul(&acc_loss)?);
+            println!(
+                "Training loss: {}",
+                acc_loss.affine(1. / cfg.grad_accum as f64, 0.)?
+            );
             optim.backward_step(&acc_loss)?;
             // reset loss for accumulate grad batch
             acc_loss = Tensor::zeros((), DType::F32, &dev)?;
