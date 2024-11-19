@@ -107,8 +107,10 @@ pub fn training_loop(m: &mut Dataset, cfg: &TrainConfig) -> anyhow::Result<()> {
 
         if i % cfg.grad_accum == 0 {
             println!(
-                "Training loss: {}",
-                acc_loss.affine(1. / cfg.grad_accum as f64, 0.)?
+                "Training loss: {:?}",
+                acc_loss
+                    .affine(1. / cfg.grad_accum as f64, 0.)?
+                    .to_scalar::<f32>()?
             );
             optim.backward_step(&acc_loss)?;
             // reset loss for accumulate grad batch
