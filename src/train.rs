@@ -1,6 +1,5 @@
 use crate::data::Dataset;
 use crate::model::{MinGRUConfig, MinGRULM};
-use anyhow;
 use candle_core::{DType, Device, IndexOp, Result, Tensor, D};
 use candle_nn::{AdamW, Optimizer, VarBuilder, VarMap};
 use candle_transformers::generation::{LogitsProcessor, Sampling};
@@ -72,7 +71,7 @@ fn base_decoding(
     Ok(tokens)
 }
 
-fn batch_encoding_to_tensor(encoding: &Vec<Vec<u32>>) -> Result<Tensor> {
+fn batch_encoding_to_tensor(encoding: &[Vec<u32>]) -> Result<Tensor> {
     let ids = encoding
         .iter()
         .map(|enc| Tensor::from_slice(enc, (enc.len(),), &Device::Cpu).unwrap())

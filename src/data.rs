@@ -5,9 +5,7 @@ use rand::prelude::*;
 use std::fs::File;
 use std::io::prelude::*;
 use std::io::BufReader;
-use std::usize;
 use tokenizers::tokenizer::{Encoding, Tokenizer};
-use tokenizers::utils::padding::{pad_encodings, PaddingDirection, PaddingParams, PaddingStrategy};
 
 fn extract_data(filepath: &str) -> String {
     let file = File::open(filepath).unwrap();
@@ -31,7 +29,6 @@ pub struct Dataset {
     pub train_data: Encoding,
     pub val_data: Encoding,
     pub tokenizer: Tokenizer,
-    pub padding_params: PaddingParams,
     pub vocab_size: usize,
     pub seq_len: usize,
     pub rng: ThreadRng,
@@ -43,17 +40,6 @@ impl Dataset {
         let split_point = data.len() as f32 * 0.85;
         let (train_data, val_data) = data.split_at(split_point as usize);
         let tokenizer = get_tokenizer(tokenizer_file).unwrap();
-        let padding_params = match tokenizer.get_padding() {
-            Some(pad_params) => pad_params.to_owned(),
-            None => PaddingParams {
-                strategy: PaddingStrategy::Fixed(seq_len),
-                direction: PaddingDirection::Right,
-                pad_to_multiple_of: None,
-                pad_id: 0,
-                pad_type_id: 0,
-                pad_token: String::from("[PAD]"),
-            },
-        };
         let vocab_size = tokenizer.get_vocab_size(false);
         let train_tokens = tokenizer.encode_fast(train_data, false).unwrap();
         let val_tokens = tokenizer.encode_fast(val_data, false).unwrap();
@@ -62,7 +48,6 @@ impl Dataset {
             train_data: train_tokens,
             val_data: val_tokens,
             tokenizer,
-            padding_params,
             vocab_size,
             seq_len,
             rng,

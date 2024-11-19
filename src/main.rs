@@ -2,7 +2,6 @@ mod data;
 mod model;
 mod train;
 use crate::train::{training_loop, TrainConfig};
-use anyhow;
 use data::Dataset;
 
 fn main() -> anyhow::Result<()> {

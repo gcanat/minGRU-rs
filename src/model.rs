@@ -15,18 +15,18 @@ fn heinsen_associative_scan_log(log_coeffs: &Tensor, log_values: &Tensor) -> Res
         .log()?
         .clamp(-1e6, 1e6)?;
     let log_h = a_star.add(&log_h0_plus_b_star)?;
-    Ok(log_h.exp()?)
+    log_h.exp()
 }
 
 fn g(x: &Tensor) -> Result<Tensor> {
     x.lt(0_u32)?
-        .where_cond(&ops::sigmoid(&x)?, &x.affine(0., 0.5)?)
+        .where_cond(&ops::sigmoid(x)?, &x.affine(0., 0.5)?)
 }
 
 fn softplus(x: &Tensor, beta: f64, threshold: f32) -> Result<Tensor> {
     let mask = x.affine(beta, 0.)?.gt(threshold)?;
     let res = x.affine(beta, 0.)?.exp()?.affine(1. / beta, 0.)?;
-    mask.where_cond(&x, &res)
+    mask.where_cond(x, &res)
 }
 
 fn log_g(x: &Tensor) -> Result<Tensor> {
@@ -287,7 +287,7 @@ impl MinGRULM {
             out = out.i((.., out_dims[1] - 1..))?;
         }
 
-        let prev_hid = prev_hiddens.unwrap_or(Vec::new());
+        let prev_hid = prev_hiddens.unwrap_or_default();
         let mut prev_hiddens_iter = prev_hid.iter();
         let mut next_prev_hiddens: Vec<Tensor> = Vec::new();
 
@@ -316,12 +316,12 @@ impl MinGRULM {
         let logits = self.to_logits.forward(&embed)?;
 
         if !return_loss {
-            return Ok((logits, next_prev_hiddens));
+            Ok((logits, next_prev_hiddens))
         } else {
             let logits_flat = logits.reshape(((), logits.dim(D::Minus1)?))?;
             let labels_flat = labels.reshape(((),))?;
             let loss = cross_entropy(&logits_flat, &labels_flat)?;
-            return Ok((loss, next_prev_hiddens));
+            Ok((loss, next_prev_hiddens))
         }
     }
 }
