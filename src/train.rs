@@ -26,7 +26,7 @@ impl Default for TrainConfig {
             grad_accum: 4,
             learning_rate: 1e-4,
             validate_every: 100,
-            prime_length: 128,
+            prime_length: 256,
             generate_every: 500,
             generate_length: 512,
             seq_len: 512,
